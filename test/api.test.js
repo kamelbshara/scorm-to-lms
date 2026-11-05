@@ -70,3 +70,51 @@ test('a failed migration has safe diagnostics and a later request retries initia
   const failed=await request(handler).get('/health');assert.equal(failed.status,503);assert.match(failed.body.error,/Database login failed/);assert.doesNotMatch(failed.text,/secret-password/);
   assert.equal((await request(handler).get('/health')).body.status,'ok');assert.equal(connects,2);
 });
+
+test('attempt IDs cannot be reassigned to another student or exam',async()=>{
+  const {app}=await setup();const exam1=await upload(app),exam2=await upload(app);
+  const config=r=>{const html=new AdmZip(r.body).readAsText('index.html');return {examId:html.match(/"examId":"([^"]+)"/)[1],token:html.match(/"token":"([^"]+)"/)[1]};};
+  const a=config(exam1),b=config(exam2);
+  const event={...a,attemptId:randomUUID(),revision:1,studentId:'s1',studentName:'First Student',score:80,status:'passed'};
+  const send=e=>request(app).post('/api/results').set('Content-Type','text/plain').send(JSON.stringify(e));
+  assert.equal((await send(event)).status,200);
+  assert.equal((await send({...event,studentId:'s2',revision:2})).status,409);
+  assert.equal((await send({...event,...b,revision:2})).status,409);
+  const grades=await request(app).get('/api/admin/grades?examId='+a.examId).set('x-admin-key',key);assert.equal(grades.body.attempts[0].student_id,'s1');assert.equal(grades.body.attempts[0].score,80);
+});
+test('duplicate title fields are rejected as a client error, not a server failure',async()=>{
+  const {app}=await setup();const response=await request(app).post('/api/admin/packages').set('x-admin-key',key).field('title','A').field('title','B').attach('package',zip(),'exam.zip');assert.equal(response.status,400);
+});
+test('unsupported package versions, base paths, and invalid encodings do not create exams',async()=>{
+  const {app}=await setup();
+  const nonUtf8=new AdmZip(zip());nonUtf8.updateFile('index.html',Buffer.from([0xff,0xfe,0x61]));
+  const invalids=[zip(manifest.replace('1.2','1.20')),zip(manifest.replace('href="index.html"','xml:base="sub/" href="index.html"')),nonUtf8.toBuffer()];
+  for(const buffer of invalids)assert.equal((await request(app).post('/api/admin/packages').set('x-admin-key',key).field('title','Invalid').attach('package',buffer,'exam.zip')).status,400);
+  assert.equal((await request(app).get('/api/admin/exams').set('x-admin-key',key)).body.length,0);
+});
+test('collector CORS preflight supports only the configured LMS origin',async()=>{
+  const {app}=await setup();const allowed=await request(app).options('/api/results').set('Origin','https://lms.moe.gov.ae');assert.equal(allowed.status,204);assert.equal(allowed.headers['access-control-allow-origin'],'https://lms.moe.gov.ae');
+  assert.equal((await request(app).options('/api/results').set('Origin','null')).status,403);
+});
+
+test('downloaded ZIP connector reports a real simulated SCORM attempt into the API and gradebook',async()=>{
+  const vm=await import('node:vm');
+  const {app}=await setup();const zipped=await upload(app);
+  const html=new AdmZip(zipped.body).readAsText('index.html');const script=html.match(/<script data-scorm-gradebook>([\s\S]*?)<\/script>/)[1];
+  const values={'cmi.core.student_id':'lms-007','cmi.core.student_name':'Student From LMS','cmi.core.score.raw':'','cmi.core.lesson_status':'incomplete'};
+  const api={LMSInitialize:()=> 'true',LMSGetValue:k=>values[k]??'',LMSSetValue:(k,v)=>{values[k]=v;return 'true';},LMSCommit:()=> 'true',LMSFinish:()=> 'true'};
+  const parent={API:api};parent.parent=parent;const window={parent,addEventListener:()=>{}};
+  const local=new Map(),session=new Map();const storage=map=>({get length(){return map.size;},key:i=>[...map.keys()][i]??null,getItem:k=>map.get(k)??null,setItem:(k,v)=>map.set(k,v),removeItem:k=>map.delete(k)});
+  const jobs=[],timers=[];
+  vm.runInNewContext(script,{window,localStorage:storage(local),sessionStorage:storage(session),crypto:{randomUUID},AbortController,setTimeout,clearTimeout,setInterval:fn=>timers.push(fn),console,fetch:(url,options)=>{
+    assert.equal(url,'https://grades.example.org/api/results');
+    const promise=request(app).post('/api/results').set('Origin','https://lms.moe.gov.ae').set('Content-Type','text/plain').send(options.body).then(res=>({ok:res.status===200,json:async()=>res.body}));jobs.push(promise);return promise;
+  }});
+  window.API.LMSInitialize('');await Promise.all(jobs);await new Promise(r=>setImmediate(r));
+  window.API.LMSSetValue('cmi.core.score.raw','96');window.API.LMSSetValue('cmi.core.lesson_status','passed');window.API.LMSCommit('');window.API.LMSFinish('');
+  await Promise.all(jobs);await new Promise(r=>setImmediate(r));await timers[0]();
+  assert.equal(local.size,0);
+  const exams=await request(app).get('/api/admin/exams').set('x-admin-key',key);
+  const grades=await request(app).get('/api/admin/grades?examId='+exams.body[0].id).set('x-admin-key',key);
+  assert.equal(grades.body.attempts.length,1);assert.equal(grades.body.attempts[0].student_id,'lms-007');assert.equal(grades.body.attempts[0].student_name,'Student From LMS');assert.equal(grades.body.attempts[0].score,96);assert.equal(grades.body.attempts[0].status,'passed');
+});

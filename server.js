@@ -10,7 +10,7 @@ import { database, migrate } from './db.js';
 import { connectPackage } from './package-scorm.js';
 const hash = v => createHash('sha256').update(v).digest('hex');
 const equal = (a,b) => timingSafeEqual(Buffer.from(hash(a)), Buffer.from(hash(b)));
-const uuid = /^[a-f0-9-]{36}$/i;
+const uuid = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
 export function createApp(db, options = {}) {
   const adminKey = options.adminKey ?? process.env.ADMIN_KEY;
   const publicUrl = options.publicUrl ?? process.env.PUBLIC_URL;
@@ -38,7 +38,7 @@ export function createApp(db, options = {}) {
   const upload = multer({storage:multer.memoryStorage(),limits:{fileSize:transferLimit,files:1,fields:2}});
   app.get('/health', async (_req,res) => {try {await db.query('SELECT 1');res.json({status:'ok'});} catch {res.status(503).json({status:'database unavailable'});}});
   app.post('/api/admin/packages', upload.single('package'), async (req,res) => {
-    if (!req.file || !req.body.title?.trim() || req.body.title.length > 200) return res.status(400).json({error:'Provide a title (up to 200 characters) and SCORM ZIP'});
+    if (!req.file || typeof req.body.title !== 'string' || !req.body.title.trim() || req.body.title.length > 200) return res.status(400).json({error:'Provide a title (up to 200 characters) and SCORM ZIP'});
     const id = randomUUID(), token = randomBytes(32).toString('hex');
     let zip;
     try {zip = connectPackage(req.file.buffer, {examId:id,token,endpoint:publicUrl.replace(/\/$/,'')+'/api/results'});} catch(e) {return res.status(400).json({error:e.message});}
@@ -60,7 +60,7 @@ export function createApp(db, options = {}) {
     res.json({imported:unique.length});
   });
   app.get('/api/admin/grades', async (req,res) => {
-    if (!uuid.test(req.query.examId ?? '')) return res.status(400).json({error:'Select an exam'});
+    if (typeof req.query.examId !== 'string' || !uuid.test(req.query.examId)) return res.status(400).json({error:'Select an exam'});
     const students = (await db.query('SELECT id,name FROM students ORDER BY name')).rows;
     const attempts = (await db.query('SELECT id,student_id,student_name,score,status,revision,received_at FROM attempts WHERE exam_id=$1 ORDER BY received_at DESC',[req.query.examId])).rows;
     res.json({students,attempts});
@@ -75,13 +75,16 @@ export function createApp(db, options = {}) {
   app.post('/api/results', express.text({type:'text/plain',limit:'16kb'}), async (req,res) => {
     let e; try {e = typeof req.body==='string' ? JSON.parse(req.body) : req.body;} catch {return res.status(400).json({error:'Invalid JSON'});}
     const statuses = ['passed','completed','failed','incomplete','browsed','not attempted'];
-    if (!e || !uuid.test(e.examId ?? '') || !uuid.test(e.attemptId ?? '') || typeof e.token!=='string' || e.token.length!==64 || !Number.isInteger(e.revision) || e.revision<1 || e.revision>2147483647 || typeof e.studentId!=='string' || !e.studentId.trim() || e.studentId.length>200 || typeof e.studentName!=='string' || e.studentName.length>200 || !statuses.includes(e.status) || !(e.score===null || (typeof e.score==='number' && Number.isFinite(e.score) && e.score>=0 && e.score<=100))) return res.status(400).json({error:'Invalid result fields (score must be 0–100 or null)'});
+    if (!e || typeof e.examId !== 'string' || typeof e.attemptId !== 'string' || !uuid.test(e.examId) || !uuid.test(e.attemptId) || typeof e.token!=='string' || e.token.length!==64 || !Number.isInteger(e.revision) || e.revision<1 || e.revision>2147483647 || typeof e.studentId!=='string' || !e.studentId.trim() || e.studentId.length>200 || typeof e.studentName!=='string' || e.studentName.length>200 || !statuses.includes(e.status) || !(e.score===null || (typeof e.score==='number' && Number.isFinite(e.score) && e.score>=0 && e.score<=100))) return res.status(400).json({error:'Invalid result fields (score must be 0–100 or null)'});
+    e.studentId = e.studentId.trim();
     const exam=(await db.query('SELECT token_hash FROM exams WHERE id=$1',[e.examId])).rows[0];
     if(!exam || !equal(hash(e.token),exam.token_hash)) return res.status(401).json({error:'Invalid exam token'});
     await db.query(`INSERT INTO attempts(id,exam_id,student_id,student_name,score,status,revision) VALUES($1,$2,$3,$4,$5,$6,$7)
       ON CONFLICT(id) DO UPDATE SET student_name=EXCLUDED.student_name,score=EXCLUDED.score,status=EXCLUDED.status,revision=EXCLUDED.revision,received_at=now()
       WHERE attempts.exam_id=EXCLUDED.exam_id AND attempts.student_id=EXCLUDED.student_id AND attempts.revision < EXCLUDED.revision RETURNING id`,[e.attemptId,e.examId,e.studentId,e.studentName,e.score,e.status,e.revision]);
-    // Old revisions and duplicate retries are deliberately acknowledged.
+    const stored = (await db.query('SELECT exam_id,student_id FROM attempts WHERE id=$1', [e.attemptId])).rows[0];
+    if (!stored || stored.exam_id !== e.examId || stored.student_id !== e.studentId) return res.status(409).json({error:'Attempt ID belongs to a different student or exam; result was not saved'});
+    // Old revisions and duplicate retries for the same student/exam are deliberately acknowledged.
     res.json({saved:true});
   });
   app.use(express.static(fileURLToPath(new URL('./public',import.meta.url))));
