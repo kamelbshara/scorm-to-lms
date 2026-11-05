@@ -46,3 +46,26 @@ test('Vercel handler serves the dashboard and initialized database API without a
   assert.deepEqual((await request(handler).get('/api/admin/exams').set('x-admin-key',key)).body,[]);
   assert.equal(connects,1);
 });
+
+test('startup identifies invalid teacher keys before running migrations and never exposes their values',async()=>{
+  const {handlerFor}=await import('../api/index.js');let queries=0;
+  const handler=handlerFor({connect:()=>({query:async()=>{queries++;}}),appOptions:{adminKey:'private-short-key',publicUrl:'https://scormrecord.vercel.app'}});
+  const response=await request(handler).get('/api/admin/exams');
+  assert.equal(response.status,503);assert.match(response.body.error,/ADMIN_KEY/);assert.doesNotMatch(response.text,/private-short-key/);assert.equal(queries,0);
+});
+test('startup identifies a missing public origin before database migration',async()=>{
+  const {handlerFor}=await import('../api/index.js');let queries=0;
+  const handler=handlerFor({connect:()=>({query:async()=>{queries++;}}),appOptions:{adminKey:key,publicUrl:''}});
+  const response=await request(handler).get('/health');assert.equal(response.status,503);assert.match(response.body.error,/PUBLIC_URL/);assert.equal(queries,0);
+});
+test('invalid DATABASE_URL produces safe guidance without echoing the secret',async()=>{
+  const {database}=await import('../db.js');const {handlerFor}=await import('../api/index.js');
+  const handler=handlerFor({connect:()=>database('psql postgresql://user:secret-password@localhost/db'),appOptions:{adminKey:key,publicUrl:'https://scormrecord.vercel.app'}});
+  const response=await request(handler).get('/health');assert.equal(response.status,503);assert.match(response.body.error,/DATABASE_URL/);assert.doesNotMatch(response.text,/secret-password/);
+});
+test('a failed migration has safe diagnostics and a later request retries initialization',async()=>{
+  const {handlerFor}=await import('../api/index.js');const mem=newDb();const {Pool}=mem.adapters.createPg();const db=new Pool();let connects=0;
+  const handler=handlerFor({connect:()=>{connects++;return connects===1?{query:async()=>{throw Object.assign(new Error('secret-password should not be shown'),{code:'28P01'});}}:db;},appOptions:{adminKey:key,publicUrl:'https://scormrecord.vercel.app'}});
+  const failed=await request(handler).get('/health');assert.equal(failed.status,503);assert.match(failed.body.error,/Database login failed/);assert.doesNotMatch(failed.text,/secret-password/);
+  assert.equal((await request(handler).get('/health')).body.status,'ok');assert.equal(connects,2);
+});

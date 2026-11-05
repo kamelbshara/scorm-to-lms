@@ -1,8 +1,12 @@
 import { neon } from '@neondatabase/serverless';
 import pg from 'pg';
+import { SetupError } from './setup-errors.js';
 export function database(url) {
-  if (!url) throw new Error('DATABASE_URL is required');
-  if (new URL(url).hostname.endsWith('.neon.tech')) {
+  if (!url) throw new SetupError('CONFIG_DATABASE_URL', 'DATABASE_URL is missing. Add the Neon PostgreSQL connection string.');
+  let parsed;
+  try { parsed = new URL(url); } catch {}
+  if (!parsed || !['postgres:', 'postgresql:'].includes(parsed.protocol) || !parsed.hostname) throw new SetupError('CONFIG_DATABASE_URL', 'DATABASE_URL must be a PostgreSQL connection URL, not a shell command or website URL.');
+  if (parsed.hostname.endsWith('.neon.tech')) {
     const sql = neon(url);
     return { query: async (text, params = []) => ({ rows: await sql.query(text, params) }) };
   }

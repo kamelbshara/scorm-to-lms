@@ -20,6 +20,10 @@ Vercel Functions have a 4.5 MB request/response ceiling. This app limits ZIP upl
 
 Adding `DATABASE_URL` in Vercel does not configure it in this development workspace. If Neon already exists, neither a Neon management API key nor a Railway token is needed for a Git-connected Vercel deployment. This does not verify MOE connectivity or browser-reported identities.
 
+### Troubleshoot startup on Vercel
+
+If the login page reports startup failure, this happens before teacher authentication. Check all three variable names (case-sensitive) in the Production scope: `DATABASE_URL`, `ADMIN_KEY` (24+ characters), and `PUBLIC_URL` (your HTTPS origin, e.g. `https://scormrecord.vercel.app`). The database value must be the raw PostgreSQL URL, without a `psql` command or surrounding shell quotes. Redeploy after saving variables. The updated handler reports safe configuration guidance and logs a startup error code without credential values. A database permissions error means the connection role needs schema creation privileges for the initial migration. Do not share connection strings or teacher keys in screenshots or logs.
+
 ## Railway + Neon deployment
 
 1. Create a Neon PostgreSQL project in a suitable region for your school's data requirements. Obtain its connection string securely; leave TLS enabled.

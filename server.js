@@ -1,4 +1,5 @@
 import express from 'express';
+import { SetupError } from './setup-errors.js';
 import helmet from 'helmet';
 import { rateLimit } from 'express-rate-limit';
 import multer from 'multer';
@@ -13,8 +14,10 @@ const uuid = /^[a-f0-9-]{36}$/i;
 export function createApp(db, options = {}) {
   const adminKey = options.adminKey ?? process.env.ADMIN_KEY;
   const publicUrl = options.publicUrl ?? process.env.PUBLIC_URL;
-  if (!adminKey || adminKey.length < 24) throw new Error('ADMIN_KEY must have at least 24 characters');
-  if (!publicUrl || (!publicUrl.startsWith('https://') && !publicUrl.startsWith('http://localhost:'))) throw new Error('PUBLIC_URL must be HTTPS (localhost permitted for development)');
+  if (!adminKey || adminKey.length < 24) throw new SetupError('CONFIG_ADMIN_KEY', 'ADMIN_KEY is missing or shorter than 24 characters.');
+  let url;
+  try { url = new URL(publicUrl); } catch {}
+  if (!url || (url.protocol !== 'https:' && !(url.protocol === 'http:' && url.hostname === 'localhost')) || url.username || url.password || url.pathname !== '/' || url.search || url.hash) throw new SetupError('CONFIG_PUBLIC_URL', 'PUBLIC_URL is missing or invalid. Set it to the app origin, such as https://scormrecord.vercel.app (localhost HTTP is permitted for development).');
   const origins = (options.origins ?? process.env.LMS_ORIGINS ?? 'https://lms.moe.gov.ae').split(',').map(s=>s.trim());
   const app = express();
   app.disable('x-powered-by');
