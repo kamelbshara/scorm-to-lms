@@ -13,7 +13,7 @@ Use `npm run check` and `npm test`. The API tests use an isolated in-memory Post
 The `api/index.js` Node function initializes the database schema once per warm instance and forwards requests to Express. `vercel.json` routes the dashboard and API to it. No persistent filesystem is required.
 
 1. Import `kamelbshara/scorm-to-lms` from GitHub and choose branch `main`, repository root directory, and framework preset **Other**. Use Node 22 or newer; do not configure a static output directory or a custom build command.
-2. Add `DATABASE_URL` (your Neon connection string), `ADMIN_KEY` (at least 24 random characters), and `PUBLIC_URL` (the stable production HTTPS domain) to Vercel's **Production** environment variables. `LMS_ORIGINS` defaults to `https://lms.moe.gov.ae`; adjust only to actual package-serving origins. Redeploy after changing variables.
+2. Add `DATABASE_URL` (your Neon connection string), `ADMIN_KEY` (at least 12 random characters), and `PUBLIC_URL` (the stable production HTTPS domain) to Vercel's **Production** environment variables. `LMS_ORIGINS` defaults to `https://lms.moe.gov.ae`; adjust only to actual package-serving origins. Redeploy after changing variables.
 3. Visit `/health`, then test teacher login and a connected ZIP. Generate connected ZIPs only after the stable domain is configured. Do not use preview deployments with real student data.
 
 Vercel Functions have a 4.5 MB request/response ceiling. This app limits ZIP uploads and connected downloads to **4 MB on Vercel**, allowing space for multipart overhead. Larger SCORM exams need Railway or a future object-storage upload flow. Rate limits here are per function instance, not a distributed abuse-control service.
@@ -22,13 +22,13 @@ Adding `DATABASE_URL` in Vercel does not configure it in this development worksp
 
 ### Troubleshoot startup on Vercel
 
-If the login page reports startup failure, this happens before teacher authentication. Check all three variable names (case-sensitive) in the Production scope: `DATABASE_URL`, `ADMIN_KEY` (24+ characters), and `PUBLIC_URL` (your HTTPS origin, e.g. `https://scormrecord.vercel.app`). The database value must be the raw PostgreSQL URL, without a `psql` command or surrounding shell quotes. Redeploy after saving variables. The updated handler reports safe configuration guidance and logs a startup error code without credential values. A database permissions error means the connection role needs schema creation privileges for the initial migration. Do not share connection strings or teacher keys in screenshots or logs.
+If the login page reports startup failure, this happens before teacher authentication. Check all three variable names (case-sensitive) in the Production scope: `DATABASE_URL`, `ADMIN_KEY` (12+ characters), and `PUBLIC_URL` (your HTTPS origin, e.g. `https://scormrecord.vercel.app`). The database value must be the raw PostgreSQL URL, without a `psql` command or surrounding shell quotes. Redeploy after saving variables. The updated handler reports safe configuration guidance and logs a startup error code without credential values. A database permissions error means the connection role needs schema creation privileges for the initial migration. Do not share connection strings or teacher keys in screenshots or logs.
 
 ## Railway + Neon deployment
 
 1. Create a Neon PostgreSQL project in a suitable region for your school's data requirements. Obtain its connection string securely; leave TLS enabled.
 2. Deploy this directory to Railway with Node 22+ (`railway.json` supplies start and health-check configuration). Set `DATABASE_URL` to the Neon connection string. Never expose it to the browser.
-3. Set `ADMIN_KEY` to at least 24 random characters (for example generate with `openssl rand -hex 32`). This is the teacher dashboard password. Store it in Railway's private variables.
+3. Set `ADMIN_KEY` to at least 12 random characters (for example generate with `openssl rand -hex 32`). This is the teacher dashboard password. Store it in Railway's private variables.
 4. Generate a Railway HTTPS domain and set `PUBLIC_URL` to its full URL. Set `LMS_ORIGINS` to comma-separated exact allowed LMS origins, initially `https://lms.moe.gov.ae`. If the LMS serves packages from another origin, add that exact origin after inspecting the test launch. No wildcard or null-origin access is enabled.
 5. Redeploy and verify `/health`, teacher login, CSV import and a connected ZIP. Set `PUBLIC_URL` before generating ZIPs: changing domains requires reconnecting the original packages.
 

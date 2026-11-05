@@ -14,7 +14,7 @@ const uuid = /^[a-f0-9-]{36}$/i;
 export function createApp(db, options = {}) {
   const adminKey = options.adminKey ?? process.env.ADMIN_KEY;
   const publicUrl = options.publicUrl ?? process.env.PUBLIC_URL;
-  if (!adminKey || adminKey.length < 24) throw new SetupError('CONFIG_ADMIN_KEY', 'ADMIN_KEY is missing or shorter than 24 characters.');
+  if (!adminKey || adminKey.length < 12) throw new SetupError('CONFIG_ADMIN_KEY', 'ADMIN_KEY is missing or shorter than 12 characters.');
   let url;
   try { url = new URL(publicUrl); } catch {}
   if (!url || (url.protocol !== 'https:' && !(url.protocol === 'http:' && url.hostname === 'localhost')) || url.username || url.password || url.pathname !== '/' || url.search || url.hash) throw new SetupError('CONFIG_PUBLIC_URL', 'PUBLIC_URL is missing or invalid. Set it to the app origin, such as https://scormrecord.vercel.app (localhost HTTP is permitted for development).');

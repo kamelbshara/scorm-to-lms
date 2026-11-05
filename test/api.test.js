@@ -6,7 +6,8 @@ import AdmZip from 'adm-zip';
 import { randomUUID } from 'node:crypto';
 import { createApp } from '../server.js';
 import { migrate } from '../db.js';
-const key='test-teacher-key-at-least-24-characters';
+// Use exactly the supported minimum so every successful auth flow checks the boundary.
+const key='test-key-123';
 const manifest=`<?xml version="1.0"?><manifest xmlns:adlcp="http://www.adlnet.org/xsd/adlcp_rootv1p2"><metadata><schema>ADL SCORM</schema><schemaversion>1.2</schemaversion></metadata><resources><resource identifier="sco" adlcp:scormtype="sco" href="index.html" type="webcontent"><file href="index.html"/></resource></resources></manifest>`;
 async function setup(){const mem=newDb();const {Pool}=mem.adapters.createPg();const db=new Pool();await migrate(db);return {db,app:createApp(db,{adminKey:key,publicUrl:'https://grades.example.org'})};}
 function zip(xml=manifest){const z=new AdmZip();z.addFile('imsmanifest.xml',Buffer.from(xml));z.addFile('index.html',Buffer.from('<html><head></head><body>Exam</body></html>'));return z.toBuffer();}
@@ -49,9 +50,9 @@ test('Vercel handler serves the dashboard and initialized database API without a
 
 test('startup identifies invalid teacher keys before running migrations and never exposes their values',async()=>{
   const {handlerFor}=await import('../api/index.js');let queries=0;
-  const handler=handlerFor({connect:()=>({query:async()=>{queries++;}}),appOptions:{adminKey:'private-short-key',publicUrl:'https://scormrecord.vercel.app'}});
+  const handler=handlerFor({connect:()=>({query:async()=>{queries++;}}),appOptions:{adminKey:'short-key11',publicUrl:'https://scormrecord.vercel.app'}});
   const response=await request(handler).get('/api/admin/exams');
-  assert.equal(response.status,503);assert.match(response.body.error,/ADMIN_KEY/);assert.doesNotMatch(response.text,/private-short-key/);assert.equal(queries,0);
+  assert.equal(response.status,503);assert.match(response.body.error,/ADMIN_KEY/);assert.doesNotMatch(response.text,/short-key11/);assert.equal(queries,0);
 });
 test('startup identifies a missing public origin before database migration',async()=>{
   const {handlerFor}=await import('../api/index.js');let queries=0;
