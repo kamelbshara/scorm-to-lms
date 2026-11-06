@@ -62,8 +62,51 @@ export function createApp(db, options = {}) {
   app.get('/api/admin/grades', async (req,res) => {
     if (typeof req.query.examId !== 'string' || !uuid.test(req.query.examId)) return res.status(400).json({error:'Select an exam'});
     const students = (await db.query('SELECT id,name FROM students ORDER BY name')).rows;
-    const attempts = (await db.query('SELECT id,student_id,student_name,score,status,revision,received_at FROM attempts WHERE exam_id=$1 ORDER BY received_at DESC',[req.query.examId])).rows;
+    const attempts = (await db.query('SELECT id,student_id,student_name,score,status,revision,received_at,interactions FROM attempts WHERE exam_id=$1 ORDER BY received_at DESC',[req.query.examId])).rows;
     res.json({students,attempts});
+  });
+  // Per-question answer analysis: aggregated stats + per-student interaction details
+  app.get('/api/admin/analysis', async (req,res) => {
+    if (typeof req.query.examId !== 'string' || !uuid.test(req.query.examId)) return res.status(400).json({error:'Select an exam'});
+    // Latest attempt per student (highest received_at per student_id)
+    const result = await db.query(
+      `SELECT DISTINCT ON (student_id) student_id, student_name, interactions
+       FROM attempts WHERE exam_id=$1 AND interactions IS NOT NULL
+       ORDER BY student_id, received_at DESC`,
+      [req.query.examId]
+    );
+    // Aggregate per-question statistics
+    const questionMap = new Map();
+    const studentAnswers = {};
+    for (const row of result.rows) {
+      const ixList = Array.isArray(row.interactions) ? row.interactions : [];
+      if (!ixList.length) continue;
+      studentAnswers[row.student_id] = {name: row.student_name, answers: ixList};
+      for (const ix of ixList) {
+        const qid = ix.id || ix.index;
+        if (qid === undefined || qid === null || qid === '') continue;
+        const key = String(qid);
+        if (!questionMap.has(key)) {
+          questionMap.set(key, {id: key, description: '', type: '', attempts: 0, correct: 0, wrong: 0, responses: {}});
+        }
+        const q = questionMap.get(key);
+        // Description and type from most recent encounter
+        if (ix.description) q.description = ix.description;
+        if (ix.type) q.type = ix.type;
+        q.attempts++;
+        if (ix.result === 'correct') q.correct++;
+        else if (ix.result === 'wrong') q.wrong++;
+        const resp = ix.studentResponse !== undefined ? String(ix.studentResponse) : '';
+        if (resp !== '') q.responses[resp] = (q.responses[resp] || 0) + 1;
+      }
+    }
+    // Sort questions by their original index order if available, else by id
+    const questions = [...questionMap.values()].sort((a, b) => {
+      const na = Number(a.id), nb = Number(b.id);
+      if (!isNaN(na) && !isNaN(nb)) return na - nb;
+      return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+    });
+    res.json({questions, studentAnswers});
   });
   app.use('/api/results', (req,res,next) => {
     const origin=req.get('origin');
@@ -72,16 +115,31 @@ export function createApp(db, options = {}) {
     if(req.method==='OPTIONS') {res.setHeader('Access-Control-Allow-Methods','POST');res.setHeader('Access-Control-Allow-Headers','Content-Type');return res.sendStatus(204);}
     next();
   });
-  app.post('/api/results', express.text({type:'text/plain',limit:'16kb'}), async (req,res) => {
+  app.post('/api/results', express.text({type:'text/plain',limit:'64kb'}), async (req,res) => {
     let e; try {e = typeof req.body==='string' ? JSON.parse(req.body) : req.body;} catch {return res.status(400).json({error:'Invalid JSON'});}
     const statuses = ['passed','completed','failed','incomplete','browsed','not attempted'];
     if (!e || typeof e.examId !== 'string' || typeof e.attemptId !== 'string' || !uuid.test(e.examId) || !uuid.test(e.attemptId) || typeof e.token!=='string' || e.token.length!==64 || !Number.isInteger(e.revision) || e.revision<1 || e.revision>2147483647 || typeof e.studentId!=='string' || !e.studentId.trim() || e.studentId.length>200 || typeof e.studentName!=='string' || e.studentName.length>200 || !statuses.includes(e.status) || !(e.score===null || (typeof e.score==='number' && Number.isFinite(e.score) && e.score>=0 && e.score<=100))) return res.status(400).json({error:'Invalid result fields (score must be 0–100 or null)'});
     e.studentId = e.studentId.trim();
+    // Validate optional interactions array (per-question answers)
+    let interactions = null;
+    if (e.interactions != null) {
+      if (!Array.isArray(e.interactions) || e.interactions.length > 200) return res.status(400).json({error:'interactions must be an array of at most 200 items'});
+      interactions = e.interactions.slice(0, 200).map(ix => {
+        if (typeof ix !== 'object' || ix === null || Array.isArray(ix)) return {};
+        const clean = {};
+        if (ix.index !== undefined) clean.index = Number(ix.index) || 0;
+        const str = (v, max=500) => typeof v === 'string' ? v.slice(0, max) : undefined;
+        const s = (k, max=500) => { const v = str(ix[k], max); if (v !== undefined) clean[k] = v; };
+        s('id', 200); s('type', 50); s('studentResponse'); s('result', 50); s('latency', 20); s('description'); s('weighting', 20);
+        if (Array.isArray(ix.correctResponses)) clean.correctResponses = ix.correctResponses.slice(0, 10).map(r => String(r ?? '').slice(0, 500));
+        return clean;
+      }).filter(ix => ix.id !== undefined || ix.studentResponse !== undefined);
+    }
     const exam=(await db.query('SELECT token_hash FROM exams WHERE id=$1',[e.examId])).rows[0];
     if(!exam || !equal(hash(e.token),exam.token_hash)) return res.status(401).json({error:'Invalid exam token'});
-    await db.query(`INSERT INTO attempts(id,exam_id,student_id,student_name,score,status,revision) VALUES($1,$2,$3,$4,$5,$6,$7)
-      ON CONFLICT(id) DO UPDATE SET student_name=EXCLUDED.student_name,score=EXCLUDED.score,status=EXCLUDED.status,revision=EXCLUDED.revision,received_at=now()
-      WHERE attempts.exam_id=EXCLUDED.exam_id AND attempts.student_id=EXCLUDED.student_id AND attempts.revision < EXCLUDED.revision RETURNING id`,[e.attemptId,e.examId,e.studentId,e.studentName,e.score,e.status,e.revision]);
+    await db.query(`INSERT INTO attempts(id,exam_id,student_id,student_name,score,status,revision,interactions) VALUES($1,$2,$3,$4,$5,$6,$7,$8)
+      ON CONFLICT(id) DO UPDATE SET student_name=EXCLUDED.student_name,score=EXCLUDED.score,status=EXCLUDED.status,revision=EXCLUDED.revision,received_at=now(),interactions=EXCLUDED.interactions
+      WHERE attempts.exam_id=EXCLUDED.exam_id AND attempts.student_id=EXCLUDED.student_id AND attempts.revision < EXCLUDED.revision RETURNING id`,[e.attemptId,e.examId,e.studentId,e.studentName,e.score,e.status,e.revision,interactions ? JSON.stringify(interactions) : null]);
     const stored = (await db.query('SELECT exam_id,student_id FROM attempts WHERE id=$1', [e.attemptId])).rows[0];
     if (!stored || stored.exam_id !== e.examId || stored.student_id !== e.studentId) return res.status(409).json({error:'Attempt ID belongs to a different student or exam; result was not saved'});
     // Old revisions and duplicate retries for the same student/exam are deliberately acknowledged.

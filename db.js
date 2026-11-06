@@ -18,6 +18,7 @@ export async function migrate(db) {
     `CREATE TABLE IF NOT EXISTS exams (id text PRIMARY KEY, title text NOT NULL, token_hash text NOT NULL, created_at timestamptz NOT NULL DEFAULT now())`,
     `CREATE TABLE IF NOT EXISTS students (id text PRIMARY KEY, name text NOT NULL)`,
     `CREATE TABLE IF NOT EXISTS attempts (id text PRIMARY KEY, exam_id text NOT NULL REFERENCES exams(id), student_id text NOT NULL, student_name text NOT NULL, score double precision, status text NOT NULL, revision integer NOT NULL, received_at timestamptz NOT NULL DEFAULT now())`,
-    `CREATE INDEX IF NOT EXISTS attempts_exam_student ON attempts(exam_id, student_id)`
+    `CREATE INDEX IF NOT EXISTS attempts_exam_student ON attempts(exam_id, student_id)`,
+    `ALTER TABLE attempts ADD COLUMN IF NOT EXISTS interactions jsonb`
   ]) await db.query(sql);
 }
