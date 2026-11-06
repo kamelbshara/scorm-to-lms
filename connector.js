@@ -45,6 +45,8 @@ function connector(config) {
   try { api.__gradebookOriginal = original; } catch {}
   let memory = new Map(), storageAvailable = true, flushing = false, attempt, lastSignature, ended = false, initialized = false, captureProblem = false;
   let lastError;
+  // Per-question interaction tracking (SCORM cmi.interactions.*)
+  const interactions = new Map();
   const eventKey = event => prefix + 'pending:' + event.attemptId + ':' + event.revision;
   function readQueue() {
     const entries = new Map(memory);
@@ -109,7 +111,9 @@ function connector(config) {
     const numeric = value === '' ? null : Number(value);
     const score = Number.isFinite(numeric) ? numeric : null;
     const status = String(original.LMSGetValue('cmi.core.lesson_status') || 'not attempted');
-    return {studentId, studentName, score, status};
+    // Include captured interaction data (answers to individual questions)
+    const ixArray = [...interactions.values()].filter(r => r.id || r.studentResponse !== undefined).slice(0, 200);
+    return {studentId, studentName, score, status, interactions: ixArray.length ? ixArray : undefined};
   }
   function capture(values, finish = false) {
     if (ended || !initialized || !values) return;
@@ -143,9 +147,31 @@ function connector(config) {
         try { lastError = original.LMSGetLastError(); } catch {}
       }
       if (String(result).toLowerCase() === 'true') {
-        if (method === 'LMSInitialize') { ended = false; initialized = true; }
+        if (method === 'LMSInitialize') { ended = false; initialized = true; interactions.clear(); }
         if (method === 'LMSFinish') capture(finalValues, true);
-        else if (initialized && (method === 'LMSInitialize' || method === 'LMSCommit' || (method === 'LMSSetValue' && ['cmi.core.score.raw','cmi.core.lesson_status'].includes(args[0])))) capture(readSnapshot());
+        else {
+          // Track individual question interactions on successful LMSSetValue calls
+          if (method === 'LMSSetValue' && initialized) {
+            const m = /^cmi\.interactions\.(\d+)\.(.+)$/.exec(args[0]);
+            if (m) {
+              const [, idx, field] = m;
+              if (!interactions.has(idx)) interactions.set(idx, {index: Number(idx)});
+              const rec = interactions.get(idx);
+              const val = String(args[1] ?? '').slice(0, 500);
+              if (field === 'id') rec.id = val;
+              else if (field === 'type') rec.type = val;
+              else if (field === 'student_response') rec.studentResponse = val;
+              else if (/^correct_responses\.\d+\.pattern$/.test(field)) {
+                (rec.correctResponses = rec.correctResponses || []).push(String(args[1] ?? '').slice(0, 500));
+              }
+              else if (field === 'result') rec.result = val;
+              else if (field === 'latency') rec.latency = val;
+              else if (field === 'description') rec.description = String(args[1] ?? '').slice(0, 500);
+              else if (field === 'weighting') rec.weighting = val;
+            }
+          }
+          if (initialized && (method === 'LMSInitialize' || method === 'LMSCommit' || (method === 'LMSSetValue' && ['cmi.core.score.raw','cmi.core.lesson_status'].includes(args[0])))) capture(readSnapshot());
+        }
       }
       return result;
     };

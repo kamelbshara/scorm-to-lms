@@ -24,7 +24,7 @@
   },
   "devDependencies": {
     "jsdom": "^31.0.0",
-    "pg-mem": "^3.0.5",
+    "pg-mem": "^3.0.14",
     "supertest": "^7.1.4"
   }
 }
