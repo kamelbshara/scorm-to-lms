@@ -5,3 +5,7 @@ node_modules/
 coverage/
 
 .vercel/
+
+# Claude Code session runtime files
+.claude-flow/
+.swarm/
